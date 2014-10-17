@@ -1,0 +1,184 @@
+AVCaptureSession *captureSession = [AVCaptureSession new];
+ 
+	[captureSession beginConfiguration];
+ 
+	NSError *error;
+ 
+	// Input device
+ 
+	AVCaptureDevice *captureDevice = [self frontOrDefaultCamera];
+	AVCaptureDeviceInput *deviceInput = [AVCaptureDeviceInput deviceInputWithDevice:captureDevice error:&error];
+ 
+	if ( [captureSession canAddInput:deviceInput] )
+	{
+		[captureSession addInput:deviceInput];
+	}
+ 
+	if ( [captureSession canSetSessionPreset:AVCaptureSessionPresetHigh] )
+	{
+		captureSession.sessionPreset = AVCaptureSessionPresetHigh;
+	}
+ 
+	// Video data output
+ 
+	AVCaptureVideoDataOutput *videoDataOutput = [self createVideoDataOutput];
+ 
+	if ( [captureSession canAddOutput:videoDataOutput] )
+	{
+		[captureSession addOutput:videoDataOutput];
+ 
+		AVCaptureConnection *connection = videoDataOutput.connections[ 0 ];
+ 
+		connection.videoOrientation = AVCaptureVideoOrientationPortrait;
+	}
+ 
+	// Metadata output
+ 
+	AVCaptureMetadataOutput *metadataOutput = [self createMetadataOutput];
+ 
+	if ( [captureSession canAddOutput:metadataOutput] )
+	{
+		[captureSession addOutput:metadataOutput];
+ 
+		metadataOutput.metadataObjectTypes = [self metadataOutput:metadataOutput allowedObjectTypes:self.faceMetadataObjectTypes];
+	}
+ 
+	// Done
+ 
+	[captureSession commitConfiguration];
+ 
+	dispatch_async( _serialQueue,
+				   ^{
+					   [captureSession startRunning];
+				   });
+ 
+	_captureSession = captureSession;
+	
+	
+	////////
+
+- (AVCaptureMetadataOutput *)createMetadataOutput
+{
+	AVCaptureMetadataOutput *metadataOutput = [AVCaptureMetadataOutput new];
+ 
+	[metadataOutput setMetadataObjectsDelegate:self queue:_serialQueue];
+ 
+	return metadataOutput;
+}
+ 
+- (NSArray *)metadataOutput:(AVCaptureMetadataOutput *)metadataOutput
+		 allowedObjectTypes:(NSArray *)objectTypes
+{
+	NSSet *available = [NSSet setWithArray:metadataOutput.availableMetadataObjectTypes];
+ 
+	[available intersectsSet:[NSSet setWithArray:objectTypes]];
+ 
+	return [available allObjects];
+}
+ 
+- (NSArray *)faceMetadataObjectTypes
+{
+	return @
+	[
+	 AVMetadataObjectTypeFace
+	 ];
+}
+ 
+- (AVCaptureVideoDataOutput *)createVideoDataOutput
+{
+	AVCaptureVideoDataOutput *videoDataOutput = [AVCaptureVideoDataOutput new];
+ 
+	[videoDataOutput setSampleBufferDelegate:self queue:_serialQueue];
+ 
+	return videoDataOutput;
+}
+
+- (AVCaptureDevice *)frontOrDefaultCamera
+{
+	NSArray *devices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo];
+ 
+	for ( AVCaptureDevice *device in devices )
+	{
+		if ( device.position == AVCaptureDevicePositionFront )
+		{
+			return device;
+		}
+	}
+ 
+	return [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
+}
+
+////////
+
+- (void)captureOutput:(AVCaptureOutput *)captureOutput didOutputMetadataObjects:(NSArray *)metadataObjects fromConnection:(AVCaptureConnection *)connection
+{
+	_facesMetadata = metadataObjects;
+}
+Once we get a video frame, we’ll make a CIImage, mask the face with a CIFilter, then render the frame to an OpenGL ES 2.0 context:
+
+- (void)captureOutput:(AVCaptureOutput *)captureOutput didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection
+{
+	CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer( sampleBuffer );
+ 
+	if ( pixelBuffer )
+	{
+		CFDictionaryRef attachments = CMCopyDictionaryOfAttachments( kCFAllocatorDefault, sampleBuffer, kCMAttachmentMode_ShouldPropagate );
+		CIImage *ciImage = [[CIImage alloc] initWithCVPixelBuffer:pixelBuffer options:(__bridge NSDictionary *)attachments];
+ 
+		if ( attachments ) CFRelease( attachments );
+ 
+		CGRect extent = ciImage.extent;
+ 
+		_filter.inputImage = ciImage;
+		_filter.inputFacesMetadata = _facesMetadata;
+ 
+		CIImage *output = _filter.outputImage;
+ 
+		_filter.inputImage = nil;
+		_filter.inputFacesMetadata = nil;
+ 
+		dispatch_async( dispatch_get_main_queue(),
+					   ^{
+						   UIView *view = self.view;
+						   CGRect bounds = view.bounds;
+						   CGFloat scale = view.contentScaleFactor;
+ 
+						   CGFloat extentFitWidth = extent.size.height / ( bounds.size.height / bounds.size.width );
+						   CGRect extentFit = CGRectMake( ( extent.size.width - extentFitWidth ) / 2, 0, extentFitWidth, extent.size.height );
+ 
+						   CGRect scaledBounds = CGRectMake( bounds.origin.x * scale, bounds.origin.y * scale, bounds.size.width * scale, bounds.size.height * scale );
+ 
+						   [_ciContext drawImage:output inRect:scaledBounds fromRect:extentFit];
+ 
+						   [_eaglContext presentRenderbuffer:GL_RENDERBUFFER];
+						   [(GLKView *)self.view display];
+					   });
+	}
+}
+The _filter is an instance of CJCAnonymousFacesFilter. It’s a simple CIFilter that creates a mask from the faces metadata and a pixelated version of the image, then blends the result into the original image:
+
+	// Create a pixellated version of the image
+	[self.anonymize setValue:inputImage forKey:kCIInputImageKey];
+ 
+	CIImage *maskImage = self.maskImage;
+	CIImage *outputImage = nil;
+ 
+	if ( maskImage )
+	{
+		// Blend the pixellated image, mask and original image
+		[self.blend setValue:_anonymize.outputImage forKey:kCIInputImageKey];
+		[_blend setValue:inputImage forKey:kCIInputBackgroundImageKey];
+		[_blend setValue:self.maskImage forKey:kCIInputMaskImageKey];
+ 
+		outputImage = _blend.outputImage;
+ 
+		[_blend setValue:nil forKey:kCIInputImageKey];
+		[_blend setValue:nil forKey:kCIInputBackgroundImageKey];
+		[_blend setValue:nil forKey:kCIInputMaskImageKey];
+	}
+	else
+	{
+		outputImage = _anonymize.outputImage;
+	}
+ 
+	[_anonymize setValue:nil forKey:kCIInputImageKey];	
