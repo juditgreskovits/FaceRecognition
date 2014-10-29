@@ -67,21 +67,21 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         // Dispose of any resources that can be recreated.
     }
     
-    func captureOutput(captureOutput: AVCaptureOutput, metadataObjects: NSArray, coonection:AVCaptureConnection) {
+    func captureOutput(captureOutput: AVCaptureOutput!, didOutputMetadataObjects metadataObjects: [AnyObject]!, fromConnection connection: AVCaptureConnection!) {
         _facesMetadataObjects = metadataObjects
     }
     
     func captureOutput(captureOutput: AVCaptureOutput!, didOutputSampleBuffer sampleBuffer: CMSampleBuffer!, fromConnection connection: AVCaptureConnection!) {
         
-        let pixelBuffer: CVPixelBufferRef = CMSampleBufferGetImageBuffer(sampleBuffer)
+        let pixelBuffer: CVPixelBufferRef? = CMSampleBufferGetImageBuffer(sampleBuffer)
         
         if(pixelBuffer != nil) {
-            let attachments: CFDictionaryRef = CMCopyDictionaryOfAttachments(kCFAllocatorDefault, sampleBuffer, kCMAttachmentMode_ShouldPropagate)
-            let ciImage = CIImage(CVPixelBuffer: pixelBuffer, options: attachments)
-            
-            if(attachments) {
-                CFRelease(attachments)
-            }
+            //CMCopyDictionaryOfAttachments(
+            let attachments = CMCopyDictionaryOfAttachments(kCFAllocatorDefault, sampleBuffer, 1)
+            //let attachments: CFDictionaryRef? = CMCopyDictionaryOfAttachments(allocator: kCFAllocatorDefault!, target: sampleBuffer!, attachmentMode: kCMAttachmentMode_ShouldPropagate)
+            // let attachments = CMCopyDictionaryOfAttachments(allocator: kCFAllocatorDefault!, target: sampleBuffer!, attachmentMode: kCMAttachmentMode_ShouldPropagate)
+            // let ciImage = CIImage(CVPixelBuffer: pixelBuffer, options: attachments)
+            let ciImage = CIImage(CVPixelBuffer: pixelBuffer)
             
             let extent: CGRect = ciImage.extent()
             
